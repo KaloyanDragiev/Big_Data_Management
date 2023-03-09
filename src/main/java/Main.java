@@ -59,9 +59,6 @@ public class Main {
         Dataset<Row> splitted = dataset.sqlContext().sql("SELECT _c0 as id, SPLIT(_c1, ';') AS values FROM dataset");
         splitted.createOrReplaceTempView("splitted_data");
 
-        System.out.println("Number of vectors: " + splitted.count());
-        splitted.show(10);
-
         UserDefinedFunction sum_var = udf(
                 (Seq<String> a, Seq<String> b, Seq<String> c) -> {
 
@@ -98,10 +95,6 @@ public class Main {
         triplets.createOrReplaceTempView("triplets");
         // Persist the triplets so that we can reuse them for different values of tau
         triplets.persist();
-
-        // Print the size of the triplets
-        System.out.println("Number of triplets: " + triplets.count());
-        triplets.show(10);
 
         for (int tau : taus) {
             System.out.println("Tau: " + tau);
@@ -141,25 +134,12 @@ public class Main {
         JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> joined2 =
                 joined.cartesian(splitted).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
 
-        // Print the number of pairs
-        System.out.println("Number of pairs: " + joined2.count());
-
-        // Print the first 10 triplets, formatted nicely
-        joined2.take(10).forEach(x -> {
-            System.out.println(x._1._1._1 + " " + Arrays.toString(x._1._1._2) + " " + x._1._2._1 + " " + Arrays.toString(x._1._2._2) + " " + x._2._1 + " " + Arrays.toString(x._2._2));
-        });
-
         // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
         JavaPairRDD<String, int[]> summed = joined2.mapToPair(x -> {
             int[] sum = IntStream.range(0, x._1._1._2.length)
                     .map(i -> x._1._1._2[i] + x._1._2._2[i] + x._2._2[i])
                     .toArray();
             return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
-        });
-
-        // Print the first 10 triplets, formatted nicely
-        summed.take(10).forEach(x -> {
-            System.out.println(x._1 + " " + Arrays.toString(x._2));
         });
 
         // Compute the variance of each vector
@@ -178,13 +158,6 @@ public class Main {
         // Only keep the triplets where the variance is smaller than the biggest tau
         variance = variance.filter(x -> x._2 <= Arrays.stream(taus).max().getAsInt());
         variance.persist(StorageLevel.MEMORY_ONLY());
-
-        // Print the first 10 triplets, formatted nicely
-        variance.take(10).forEach(x -> {
-            System.out.println(x._1 + " " + x._2);
-        });
-        // Print the number of triplets
-        System.out.println("Number of triplets: " + variance.count());
 
         for (int tau : taus) {
             System.out.println("Tau: " + tau);
@@ -225,7 +198,13 @@ public class Main {
         // Print the time it took to execute the query
         System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
 
+        // Get the time before executing the query
+        long startTime2 = System.nanoTime();
         q3(sparkContext, rdd);
+        // Get the time after executing the query
+        long endTime2 = System.nanoTime();
+        // Print the time it took to execute the query
+        System.out.println("Time: " + (endTime2 - startTime2) / 1000000 + " ms");
 
         q4(sparkContext, rdd);
 
