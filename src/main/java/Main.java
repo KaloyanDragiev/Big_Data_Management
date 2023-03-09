@@ -1,5 +1,6 @@
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
+import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
@@ -7,11 +8,11 @@ import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.expressions.UserDefinedFunction;
 import org.apache.spark.sql.types.DataTypes;
-import scala.collection.JavaConverters;
+import org.apache.spark.storage.StorageLevel;
+import scala.Tuple2;
 import scala.collection.Seq;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.OptionalDouble;
 import java.util.stream.IntStream;
 
@@ -123,8 +124,81 @@ public class Main {
         triplets.unpersist();
     }
 
-    private static void q3(JavaSparkContext sparkContext, JavaRDD rdd) {
-        // TODO: Implement Q3 here
+    private static void q3(JavaSparkContext sparkContext, JavaRDD<String> rdd) {
+        int[] taus = { 20, 50, 310, 360, 410 };
+
+        // Split every entry into an id and a vector
+        JavaRDD<Tuple2<String, int[]>> splitted = rdd.map(x -> {
+            String[] split = x.split(",");
+            int[] vector = Arrays.stream(split[1].split(";")).mapToInt(Integer::parseInt).toArray();
+            return new Tuple2<>(split[0], vector);
+        });
+
+        // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
+        JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> joined =
+                splitted.cartesian(splitted).filter(x -> x._1._1.compareTo(x._2._1) < 0);
+        // Join it again with itself to get all possible triplets
+        JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> joined2 =
+                joined.cartesian(splitted).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
+
+        // Print the number of pairs
+        System.out.println("Number of pairs: " + joined2.count());
+
+        // Print the first 10 triplets, formatted nicely
+        joined2.take(10).forEach(x -> {
+            System.out.println(x._1._1._1 + " " + Arrays.toString(x._1._1._2) + " " + x._1._2._1 + " " + Arrays.toString(x._1._2._2) + " " + x._2._1 + " " + Arrays.toString(x._2._2));
+        });
+
+        // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
+        JavaPairRDD<String, int[]> summed = joined2.mapToPair(x -> {
+            int[] sum = IntStream.range(0, x._1._1._2.length)
+                    .map(i -> x._1._1._2[i] + x._1._2._2[i] + x._2._2[i])
+                    .toArray();
+            return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
+        });
+
+        // Print the first 10 triplets, formatted nicely
+        summed.take(10).forEach(x -> {
+            System.out.println(x._1 + " " + Arrays.toString(x._2));
+        });
+
+        // Compute the variance of each vector
+        JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
+            // Compute the average
+            double avg = Arrays.stream(x).average().getAsDouble();
+            // Compute the variance
+            double var = 0;
+            for (int i : x) {
+                var += Math.pow(i, 2);
+            }
+            var = var / x.length;
+            return var - Math.pow(avg, 2);
+        });
+
+        // Only keep the triplets where the variance is smaller than the biggest tau
+        variance = variance.filter(x -> x._2 <= Arrays.stream(taus).max().getAsInt());
+        variance.persist(StorageLevel.MEMORY_ONLY());
+
+        // Print the first 10 triplets, formatted nicely
+        variance.take(10).forEach(x -> {
+            System.out.println(x._1 + " " + x._2);
+        });
+        // Print the number of triplets
+        System.out.println("Number of triplets: " + variance.count());
+
+        for (int tau : taus) {
+            System.out.println("Tau: " + tau);
+            // Filter out the triplets where the variance is smaller than tau
+            JavaPairRDD<String, Double> filtered = variance.filter(x -> x._2 <= tau);
+            // Print the first 10 triplets, formatted nicely
+            filtered.take(10).forEach(x -> {
+                System.out.println(x._1 + " " + x._2);
+            });
+            // Print the number of triplets
+            System.out.println("Number of triplets: " + filtered.count());
+        }
+
+        variance.unpersist();
     }
 
     private static void q4(JavaSparkContext sparkContext, JavaRDD rdd) {
