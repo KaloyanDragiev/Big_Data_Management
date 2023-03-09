@@ -13,6 +13,7 @@ import scala.collection.Seq;
 import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.stream.IntStream;
 
 import static org.apache.spark.sql.functions.udf;
 
@@ -50,6 +51,8 @@ public class Main {
     }
 
     private static void q2(JavaSparkContext sparkContext, Dataset dataset) {
+        int[] taus = { 20, 50, 310, 360, 410 };
+
         dataset.createOrReplaceTempView("dataset");
 
         Dataset<Row> splitted = dataset.sqlContext().sql("SELECT _c0 as id, SPLIT(_c1, ';') AS values FROM dataset");
@@ -60,16 +63,10 @@ public class Main {
 
         UserDefinedFunction sum_var = udf(
                 (Seq<String> a, Seq<String> b, Seq<String> c) -> {
-                    // Convert Seq to List
-                    List<String> aa = JavaConverters.asJava(a);
-                    List<String> bb = JavaConverters.asJava(b);
-                    List<String> cc = JavaConverters.asJava(c);
 
-                    // Aggregate the vectors
-                    int[] result = new int[a.length()];
-                    for (int i = 0; i < a.length(); i++) {
-                        result[i] = Integer.parseInt(aa.get(i)) + Integer.parseInt(bb.get(i)) + Integer.parseInt(cc.get(i));
-                    }
+                    int[] result = IntStream.range(0, a.size())
+                            .map(i -> Integer.parseInt(a.apply(i)) + Integer.parseInt(b.apply(i)) + Integer.parseInt(c.apply(i)))
+                            .toArray();
 
                     // Compute the variance
                     OptionalDouble optAvg = Arrays.stream(result).average();
@@ -91,11 +88,12 @@ public class Main {
 
         // Join the dataset with itself twice to get all possible triplets
         Dataset<Row> triplets = dataset.sqlContext().sql(
+                "SELECT X_id, Y_id, Z_id, var FROM (" +
                 "SELECT X.id as X_id, Y.id as Y_id, Z.id as Z_id, " +
                 "sum_var(X.values, Y.values, Z.values) AS var " +
                 "FROM " +
                 "(splitted_data as X JOIN splitted_data AS Y ON X.id < Y.id JOIN splitted_data AS Z ON Y.id < Z.id)" +
-                "ORDER BY var ASC");
+                ") WHERE var <= " + Arrays.stream(taus).max().getAsInt());
         triplets.createOrReplaceTempView("triplets");
         // Persist the triplets so that we can reuse them for different values of tau
         triplets.persist();
@@ -104,7 +102,6 @@ public class Main {
         System.out.println("Number of triplets: " + triplets.count());
         triplets.show(10);
 
-        int[] taus = { 20, 50, 310, 360, 410 };
         for (int tau : taus) {
             System.out.println("Tau: " + tau);
             // Compute the variance of each vector
@@ -119,6 +116,8 @@ public class Main {
             System.out.println("Number of triplets: " + variance.count());
             variance.show(10);
         }
+
+        triplets.explain();
 
         // Unpersist the triplets
         triplets.unpersist();
@@ -144,7 +143,13 @@ public class Main {
 
         JavaRDD rdd = q1b(sparkContext, onServer);
 
+        // Get the time before executing the query
+        long startTime = System.nanoTime();
         q2(sparkContext, dataset);
+        // Get the time after executing the query
+        long endTime = System.nanoTime();
+        // Print the time it took to execute the query
+        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
 
         q3(sparkContext, rdd);
 
