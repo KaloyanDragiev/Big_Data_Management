@@ -1,3 +1,4 @@
+import org.apache.log4j.Logger;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -44,11 +45,7 @@ public class Main {
     private static JavaRDD q1b(JavaSparkContext sparkContext, boolean onServer) {
         String vectorsFilePath = (onServer) ? "/vectors.csv" : "vectors.csv";
 
-        SparkSession sparkSession = SparkSession.builder().sparkContext(sparkContext.sc()).getOrCreate();
-
-        return sparkSession.sparkContext()
-        .textFile(vectorsFilePath, 1)
-        .toJavaRDD();
+        return sparkContext.textFile(vectorsFilePath);
     }
 
     private static void q2(JavaSparkContext sparkContext, Dataset dataset) {
@@ -121,11 +118,69 @@ public class Main {
         int[] taus = { 20, 50, 310, 360, 410 };
 
         // Split every entry into an id and a vector
+        JavaPairRDD<String, int[]> vectors = rdd.mapToPair(x -> {
+            String[] split = x.split(",");
+            int[] vector = Arrays.stream(split[1].split(";")).mapToInt(Integer::parseInt).toArray();
+            return new Tuple2<>(split[0], vector);
+        });
+
+        // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
+        JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> pairs =
+                vectors.cartesian(vectors).filter(x -> x._1._1.compareTo(x._2._1) < 0);
+
+        // Join it again with itself to get all possible triplets
+        JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> triplets =
+                pairs.cartesian(vectors).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
+
+        // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
+        JavaPairRDD<String, int[]> summed = triplets.mapToPair(x -> {
+            int[] sum = new int[x._1._1._2.length];
+            for (int i = 0; i < sum.length; i++) {
+                sum[i] = x._1._1._2[i] + x._1._2._2[i] + x._2._2[i];
+            }
+            return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
+        });
+
+        // Compute the variance of each vector
+        JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
+            // Compute the average
+            double avg = Arrays.stream(x).average().getAsDouble();
+            // Compute E[X^2]
+            double ex2 = Arrays.stream(x).mapToDouble(i -> Math.pow(i, 2)).sum() / ((double) x.length);
+            // Compute (E[X])^2
+            double exSquared = Math.pow(avg, 2);
+            return ex2 - exSquared;
+        });
+
+        // Only keep the triplets where the variance is smaller than the biggest tau
+        JavaPairRDD<String, Double> filtered = variance.filter(x -> x._2 <= Arrays.stream(taus).max().getAsInt());
+
+        filtered.persist(StorageLevel.MEMORY_ONLY());
+
+        for (int tau : taus) {
+            System.out.println("Tau: " + tau);
+            // Filter out the triplets where the variance is smaller than tau
+            JavaPairRDD<String, Double> tauFiltered = filtered.filter(x -> x._2 <= tau);
+            // Print the number of triplets
+            System.out.println("Number of triplets: " + tauFiltered.count());
+            // Print the first 10 triplets
+            tauFiltered.take(10).forEach(System.out::println);
+        }
+
+        filtered.unpersist();
+    }
+
+    private static void q3_old(JavaSparkContext sparkContext, JavaRDD<String> rdd) {
+        int[] taus = { 20, 50, 310, 360, 410 };
+
+        // Split every entry into an id and a vector
         JavaRDD<Tuple2<String, int[]>> splitted = rdd.map(x -> {
             String[] split = x.split(",");
             int[] vector = Arrays.stream(split[1].split(";")).mapToInt(Integer::parseInt).toArray();
             return new Tuple2<>(split[0], vector);
         });
+
+        splitted.persist(StorageLevel.MEMORY_ONLY());
 
         // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
         JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> joined =
@@ -133,6 +188,8 @@ public class Main {
         // Join it again with itself to get all possible triplets
         JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> joined2 =
                 joined.cartesian(splitted).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
+
+        splitted.unpersist();
 
         // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
         JavaPairRDD<String, int[]> summed = joined2.mapToPair(x -> {
@@ -190,13 +247,13 @@ public class Main {
 
         JavaRDD rdd = q1b(sparkContext, onServer);
 
-        // Get the time before executing the query
-        long startTime = System.nanoTime();
-        q2(sparkContext, dataset);
-        // Get the time after executing the query
-        long endTime = System.nanoTime();
-        // Print the time it took to execute the query
-        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
+//        // Get the time before executing the query
+//        long startTime = System.nanoTime();
+//        q2(sparkContext, dataset);
+//        // Get the time after executing the query
+//        long endTime = System.nanoTime();
+//        // Print the time it took to execute the query
+//        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
 
         // Get the time before executing the query
         long startTime2 = System.nanoTime();
