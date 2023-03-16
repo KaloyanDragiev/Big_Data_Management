@@ -4,6 +4,7 @@ import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.Row;
@@ -13,9 +14,15 @@ import org.apache.spark.storage.StorageLevel;
 import scala.Tuple2;
 import scala.collection.Seq;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.OptionalDouble;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import scala.Tuple2;
+import org.apache.spark.util.sketch.CountMinSketch;
+
 
 import static org.apache.spark.sql.functions.udf;
 
@@ -231,8 +238,89 @@ public class Main {
         variance.unpersist();
     }
 
-    private static void q4(JavaSparkContext sparkContext, JavaRDD rdd) {
-        // TODO: Implement Q4 here
+    private static void q4(JavaSparkContext sparkContext, JavaRDD<String> rdd, int[] taus, double eps, double delta, Boolean lower) {
+
+        // Split every entry into an id and a vector
+        JavaRDD<Tuple2<String, int[]>> splitted = rdd.map(x -> {
+            String[] split = x.split(",");
+            int[] vector = Arrays.stream(split[1].split(";")).mapToInt(Integer::parseInt).toArray();
+            return new Tuple2<>(split[0], vector);
+        });
+
+        // Initialize the Count-Min sketch and  find a way to use this sketch for representing the splitted RDD 
+        CountMinSketch cms = CountMinSketch.create(eps, delta, 1);
+        JavaPairRDD<String, CountMinSketch> cmsRDD = splitted.mapToPair(x -> {
+            cms.add(x._1, 1);
+            return new Tuple2<>(x._1, cms);
+        });
+        // Use the sketch to get an estimate of the number of distinct ids in the RDD
+        // Print the estimate
+        System.out.println("Estimated number of distinct ids: " + cmsRDD.count());
+
+        // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
+        JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> joined =
+                splitted.cartesian(splitted).filter(x -> x._1._1.compareTo(x._2._1) < 0);
+        // Join it again with itself to get all possible triplets
+        JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> joined2 =
+                joined.cartesian(splitted).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
+
+        // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
+        JavaPairRDD<String, int[]> summed = joined2.mapToPair(x -> {
+            int[] sum = IntStream.range(0, x._1._1._2.length)
+                    .map(i -> x._1._1._2[i] + x._1._2._2[i] + x._2._2[i])
+                    .toArray();
+            return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
+        });
+
+        // Compute the variance of each vector
+        JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
+            // Compute the average
+            double avg = Arrays.stream(x).average().getAsDouble();
+            // Compute the variance
+            double var = 0;
+            for (int i : x) {
+                var += Math.pow(i, 2);
+            }
+            var = var / x.length;
+            return var - Math.pow(avg, 2);
+        });
+
+        // Collect the first 10 variances
+        // Filter the variance RDD to only keep the triplets where the variance is smaller than the biggest tau
+        
+        if (lower) {
+            variance = variance.filter(x -> x._2 < Arrays.stream(taus).max().getAsInt());
+        } else {
+            variance = variance.filter(x -> x._2 > Arrays.stream(taus).min().getAsInt());
+        }
+
+        variance.persist(StorageLevel.MEMORY_ONLY());
+        
+        for (double t : taus) {
+
+            JavaPairRDD<String, Double> filtered;
+
+            if (lower) {
+                filtered  = variance.filter(x -> x._2 < t);
+            } else {
+                filtered  = variance.filter(x -> x._2 > t);
+            }
+
+            System.out.println("Tau " + t);
+
+            System.out.printf("Number of triplets: %d\n", filtered.count());
+
+            List<Tuple2<String, Double>> first10Variances = filtered.take(10);
+    
+            // Print the first 10 variances
+            System.out.println("First 10 variances:");
+            for (Tuple2<String, Double> f : first10Variances) {
+                System.out.printf("%s: %.2f\n", f._1(), f._2());
+            }  
+        }      
+        
+        variance.unpersist();
+            
     }
 
 
@@ -255,15 +343,34 @@ public class Main {
 //        // Print the time it took to execute the query
 //        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
 
-        // Get the time before executing the query
-        long startTime2 = System.nanoTime();
-        q3(sparkContext, rdd);
-        // Get the time after executing the query
-        long endTime2 = System.nanoTime();
-        // Print the time it took to execute the query
-        System.out.println("Time: " + (endTime2 - startTime2) / 1000000 + " ms");
+        // // Get the time before executing the query
+        // long startTime2 = System.nanoTime();
+        // q3(sparkContext, rdd);
+        // // Get the time after executing the query
+        // long endTime2 = System.nanoTime();
+        // // Print the time it took to execute the query
+        // System.out.println("Time: " + (endTime2 - startTime2) / 1000000 + " ms");
 
-        q4(sparkContext, rdd);
+        Boolean lower = false;
+
+        int[] taus = {};  
+        double[] epsilon = {};
+        double delta; 
+
+        if (lower) {
+            taus = new int[] {400};
+            epsilon = new double[] {0.01, 0.001};
+            delta = 0.1;             
+        } else {
+            taus = new int[] { 200000, 1000000};
+            epsilon = new double[]  {0.0001, 0.001, 0.002, 0.01};
+            delta = 0.1;    
+        }
+
+        for (double eps : epsilon) {
+            System.out.println("Epsilon: " + eps + " Delta: " + delta);
+            q4(sparkContext, rdd, taus, eps, delta, lower);
+        }
 
         sparkContext.close();
     }
