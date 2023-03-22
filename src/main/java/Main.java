@@ -1,4 +1,6 @@
+import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.I;
 import org.apache.log4j.Logger;
+import org.apache.log4j.net.SyslogAppender;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -11,15 +13,22 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.expressions.UserDefinedFunction;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.storage.StorageLevel;
+import org.apache.spark.util.sketch.CountMinSketch;
 import scala.Tuple2;
+import scala.Tuple3;
 import scala.collection.Seq;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.Set;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
 import scala.Tuple2;
 import org.apache.spark.util.sketch.CountMinSketch;
 
@@ -238,77 +247,134 @@ public class Main {
         variance.unpersist();
     }
 
-    private static void q4(JavaSparkContext sparkContext, JavaRDD<String> rdd, int[] taus, double eps, double delta, Boolean lower) {
+    public static int[][] countMinSketch(int[] data, int numHashTables, int numHashFuncs) {
+        // Initialize Count-Min sketch with given parameters
+        int[][] sketch = new int[numHashFuncs][numHashTables];
+        
+        // Hash each element and increment corresponding counter
+        for (int idx = 0; idx < data.length; idx++) {
+            int element = data[idx];
 
+            int hashVal = first_hash(idx, numHashTables);
+            int hashVal_2 = second_hash(idx, numHashTables);
+            int hashVal_3 = third_hash(idx, numHashTables);
+
+            sketch[0][hashVal] += element;
+            sketch[1][hashVal_2] += element;
+            sketch[2][hashVal_3] += element;
+        }
+        
+        return sketch;
+    }
+
+    public static int first_hash(int index, int numHashTables) {
+        return Math.abs((3553061*index + 3553049) % 3552859) % numHashTables;
+    }
+    public static int second_hash(int index, int numHashTables) {
+        return Math.abs((3553117*index + 3553139) % 3553007) % numHashTables;
+    }
+    public static int third_hash(int index, int numHashTables) {
+        return Math.abs((3554527*index + 3553453) % 3555749) % numHashTables;
+    }
+    
+    public static double estimateVariance(int[][] sketch, int vectorLength) {
+        // Create sketch dot product array
+        int[] sketchDotProduct = new int[sketch[0].length];
+        for (int i = 0; i < sketch[0].length; i++) {
+            for (int j = 0; j < sketch.length; j++) {
+                sketchDotProduct[i] += sketch[j][i] * sketch[j][i];
+            }
+        }
+
+        // Get the min of sketch dot product array
+        int dotProduct = Arrays.stream(sketchDotProduct).min().getAsInt();
+
+        double mean = (double)Arrays.stream(sketch[0]).sum()/(double)vectorLength;
+        
+        // Estimate variance
+        double variance = (dotProduct / vectorLength) - Math.pow(mean, 2);
+        
+        return variance;
+    }    
+
+    private static void q4(JavaSparkContext sparkContext, JavaRDD<String> rdd, int[] taus, double eps, double delta, Boolean lower) {
+                
         // Split every entry into an id and a vector
-        JavaRDD<Tuple2<String, int[]>> splitted = rdd.map(x -> {
+        JavaPairRDD<String, int[]> splitted = rdd.mapToPair(x -> {
             String[] split = x.split(",");
             int[] vector = Arrays.stream(split[1].split(";")).mapToInt(Integer::parseInt).toArray();
             return new Tuple2<>(split[0], vector);
         });
 
-        // Initialize the Count-Min sketch and  find a way to use this sketch for representing the splitted RDD 
-        CountMinSketch cms = CountMinSketch.create(eps, delta, 1);
-        JavaPairRDD<String, CountMinSketch> cmsRDD = splitted.mapToPair(x -> {
-            cms.add(x._1, 1);
-            return new Tuple2<>(x._1, cms);
-        });
-        // Use the sketch to get an estimate of the number of distinct ids in the RDD
-        // Print the estimate
-        System.out.println("Estimated number of distinct ids: " + cmsRDD.count());
+        int vectorLength = splitted.take(1).get(0)._2.length;
+
+        int w = (int) Math.ceil(Math.E / eps);
+        int d = (int) Math.ceil(Math.log(1 / delta));
+
+        // From splitted RDD, extract the data arrays and build Count-Min sketch for each data array together with its id
+        JavaRDD<Tuple2<String, int[][]>> sketches = splitted.map(x -> new Tuple2<>(x._1, countMinSketch(x._2, w, d)));
+
+        // System.out.println("Number of unique sketches: " + sketches.count()); // 250
+        
+        sketches.persist(StorageLevel.MEMORY_ONLY());
 
         // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
-        JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> joined =
-                splitted.cartesian(splitted).filter(x -> x._1._1.compareTo(x._2._1) < 0);
+        JavaPairRDD<Tuple2<String, int[][]>, Tuple2<String, int[][]>> pairs =
+            sketches.cartesian(sketches).filter(x -> x._1._1.compareTo(x._2._1) < 0);
+
         // Join it again with itself to get all possible triplets
-        JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> joined2 =
-                joined.cartesian(splitted).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
+        JavaPairRDD<Tuple2<Tuple2<String, int[][]>, Tuple2<String, int[][]>>, Tuple2<String, int[][]>> triplets =
+                pairs.cartesian(sketches).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
 
-        // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
-        JavaPairRDD<String, int[]> summed = joined2.mapToPair(x -> {
-            int[] sum = IntStream.range(0, x._1._1._2.length)
-                    .map(i -> x._1._1._2[i] + x._1._2._2[i] + x._2._2[i])
-                    .toArray();
-            return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
-        });
+        // System.out.println("Number of unique triplesRDD: " + triplets.count()); // 2573000
 
-        // Compute the variance of each vector
-        JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
-            // Compute the average
-            double avg = Arrays.stream(x).average().getAsDouble();
-            // Compute the variance
-            double var = 0;
-            for (int i : x) {
-                var += Math.pow(i, 2);
+        // Sum the arrays from the triplets and append the keys
+        JavaPairRDD<String, int[][]> sketchTriples = triplets.mapToPair(x -> {
+            String key = x._1._1._1 + "," + x._1._2._1 + "," + x._2._1;
+            int[][] sketch = new int[d][w];
+            for (int i = 0; i < d; i++) {
+                for (int j = 0; j < w; j++) {
+                    sketch[i][j] = x._1._1._2[i][j] + x._1._2._2[i][j] + x._2._2[i][j];
+                }
             }
-            var = var / x.length;
-            return var - Math.pow(avg, 2);
+            return new Tuple2<>(key, sketch);
         });
+        sketchTriples.persist(StorageLevel.MEMORY_ONLY());
 
-        // Collect the first 10 variances
-        // Filter the variance RDD to only keep the triplets where the variance is smaller than the biggest tau
+        sketches.unpersist();
+
+        // System.out.println("Number of unique sketchTriples: " + sketchTriples.count()); // 2573000
+                
+        JavaPairRDD<String, Double> sketchVariances = sketchTriples.mapValues(x -> estimateVariance(x, vectorLength));
         
+
+        //Estimate variance of data stream using Count-Min sketch
+        JavaPairRDD<String, Double> variance;
+
         if (lower) {
-            variance = variance.filter(x -> x._2 < Arrays.stream(taus).max().getAsInt());
+            variance = sketchVariances.filter(x -> x._2 < Arrays.stream(taus).max().getAsInt());        
         } else {
-            variance = variance.filter(x -> x._2 > Arrays.stream(taus).min().getAsInt());
+            variance = sketchVariances.filter(x -> x._2 > Arrays.stream(taus).min().getAsInt());       
         }
 
         variance.persist(StorageLevel.MEMORY_ONLY());
         
+        sketchTriples.unpersist();
+
         for (double t : taus) {
 
             JavaPairRDD<String, Double> filtered;
 
             if (lower) {
-                filtered  = variance.filter(x -> x._2 < t);
+                filtered = variance.filter(x -> x._2 < t);        
+
             } else {
-                filtered  = variance.filter(x -> x._2 > t);
+                filtered = variance.filter(x -> x._2 > t); 
             }
 
             System.out.println("Tau " + t);
 
-            System.out.printf("Number of triplets: %d\n", filtered.count());
+            // System.out.printf("Number of triplets: %d\n", filtered.count());
 
             List<Tuple2<String, Double>> first10Variances = filtered.take(10);
     
@@ -317,12 +383,12 @@ public class Main {
             for (Tuple2<String, Double> f : first10Variances) {
                 System.out.printf("%s: %.2f\n", f._1(), f._2());
             }  
+            
         }      
         
         variance.unpersist();
             
     }
-
 
     // Main method which initializes a Spark context and runs the code for each question.
     // To skip executing a question while developing a solution, simply comment out the corresponding method call.
