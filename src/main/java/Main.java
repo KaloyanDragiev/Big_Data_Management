@@ -279,21 +279,20 @@ public class Main {
     
     public static double estimateVariance(int[][] sketch, int vectorLength) {
         // Create sketch dot product array
-        int[] sketchDotProduct = new int[sketch[0].length];
-        for (int i = 0; i < sketch[0].length; i++) {
-            for (int j = 0; j < sketch.length; j++) {
-                sketchDotProduct[i] += sketch[j][i] * sketch[j][i];
+        long[] sketchDotProduct = new long[sketch.length];
+        for (int i = 0; i < sketch.length; i++) {
+            for (int j = 0; j < sketch[0].length; j++) {
+                sketchDotProduct[i] += sketch[i][j] * sketch[i][j];
             }
         }
-
         // Get the min of sketch dot product array
-        int dotProduct = Arrays.stream(sketchDotProduct).min().getAsInt();
+        long dotProduct = Arrays.stream(sketchDotProduct).min().getAsLong();
 
         double mean = (double)Arrays.stream(sketch[0]).sum()/(double)vectorLength;
         
         // Estimate variance
-        double variance = (dotProduct / vectorLength) - Math.pow(mean, 2);
-        
+        double variance = ((double)dotProduct / vectorLength) - Math.pow(mean, 2);
+        //System.out.println("Estimated variance: " + variance);
         return variance;
     }    
 
@@ -306,6 +305,7 @@ public class Main {
             return new Tuple2<>(split[0], vector);
         });
 
+        // Take length of the vectors
         int vectorLength = splitted.take(1).get(0)._2.length;
 
         int w = (int) Math.ceil(Math.E / eps);
@@ -314,8 +314,6 @@ public class Main {
         // From splitted RDD, extract the data arrays and build Count-Min sketch for each data array together with its id
         JavaRDD<Tuple2<String, int[][]>> sketches = splitted.map(x -> new Tuple2<>(x._1, countMinSketch(x._2, w, d)));
 
-        // System.out.println("Number of unique sketches: " + sketches.count()); // 250
-        
         sketches.persist(StorageLevel.MEMORY_ONLY());
 
         // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
@@ -325,8 +323,6 @@ public class Main {
         // Join it again with itself to get all possible triplets
         JavaPairRDD<Tuple2<Tuple2<String, int[][]>, Tuple2<String, int[][]>>, Tuple2<String, int[][]>> triplets =
                 pairs.cartesian(sketches).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
-
-        // System.out.println("Number of unique triplesRDD: " + triplets.count()); // 2573000
 
         // Sum the arrays from the triplets and append the keys
         JavaPairRDD<String, int[][]> sketchTriples = triplets.mapToPair(x -> {
@@ -339,14 +335,11 @@ public class Main {
             }
             return new Tuple2<>(key, sketch);
         });
+
         sketchTriples.persist(StorageLevel.MEMORY_ONLY());
-
         sketches.unpersist();
-
-        // System.out.println("Number of unique sketchTriples: " + sketchTriples.count()); // 2573000
                 
-        JavaPairRDD<String, Double> sketchVariances = sketchTriples.mapValues(x -> estimateVariance(x, vectorLength));
-        
+        JavaPairRDD<String, Double> sketchVariances = sketchTriples.mapValues(x -> estimateVariance(x, vectorLength));        
 
         //Estimate variance of data stream using Count-Min sketch
         JavaPairRDD<String, Double> variance;
@@ -357,8 +350,7 @@ public class Main {
             variance = sketchVariances.filter(x -> x._2 > Arrays.stream(taus).min().getAsInt());       
         }
 
-        variance.persist(StorageLevel.MEMORY_ONLY());
-        
+        variance.persist(StorageLevel.MEMORY_ONLY());        
         sketchTriples.unpersist();
 
         for (double t : taus) {
@@ -374,7 +366,7 @@ public class Main {
 
             System.out.println("Tau " + t);
 
-            // System.out.printf("Number of triplets: %d\n", filtered.count());
+            System.out.printf("Number of triplets: %d\n", filtered.count());
 
             List<Tuple2<String, Double>> first10Variances = filtered.take(10);
     
@@ -386,8 +378,7 @@ public class Main {
             
         }      
         
-        variance.unpersist();
-            
+        variance.unpersist();            
     }
 
     // Main method which initializes a Spark context and runs the code for each question.
@@ -417,7 +408,7 @@ public class Main {
         // // Print the time it took to execute the query
         // System.out.println("Time: " + (endTime2 - startTime2) / 1000000 + " ms");
 
-        Boolean lower = false;
+        Boolean lower = true;
 
         int[] taus = {};  
         double[] epsilon = {};
@@ -429,7 +420,7 @@ public class Main {
             delta = 0.1;             
         } else {
             taus = new int[] { 200000, 1000000};
-            epsilon = new double[]  {0.0001, 0.001, 0.002, 0.01};
+            epsilon = new double[]  {0.01, 0.0001, 0.001, 0.002};
             delta = 0.1;    
         }
 
