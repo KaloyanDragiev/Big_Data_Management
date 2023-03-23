@@ -40,7 +40,7 @@ public class Main {
 
         SparkSession sparkSession = SparkSession.builder().sparkContext(sparkContext.sc()).getOrCreate();
 
-        return sparkSession.read().csv(vectorsFilePath);
+        return sparkSession.read().csv(vectorsFilePath).repartition(sparkContext.defaultParallelism() * 4);
     }
 
     private static JavaRDD q1b(JavaSparkContext sparkContext, boolean onServer) {
@@ -79,6 +79,8 @@ public class Main {
                 }, DataTypes.DoubleType
         );
 
+        splitted.persist();
+
         // Register the function as a UDF
         dataset.sqlContext().udf().register("sum_var", sum_var);
 
@@ -113,6 +115,7 @@ public class Main {
 
         // Unpersist the triplets
         triplets.unpersist();
+        splitted.unpersist();
     }
 
     private static void q3(JavaSparkContext sparkContext, JavaRDD<String> rdd) {
@@ -389,7 +392,7 @@ public class Main {
     // Main method which initializes a Spark context and runs the code for each question.
     // To skip executing a question while developing a solution, simply comment out the corresponding method call.
     public static void main(String[] args) {
-        boolean onServer = false; // TODO: Set this to true if and only if building a JAR to run on the server
+        boolean onServer = true; // TODO: Set this to true if and only if building a JAR to run on the server
 
         JavaSparkContext sparkContext = getSparkContext(onServer);
 
@@ -401,15 +404,15 @@ public class Main {
         System.out.println("Number of cores: " + ctx.defaultParallelism());
         System.out.println("Number of workers: " + ctx.getExecutorMemoryStatus().size());
 
-        // Get the time before executing the query
-        long startTime = System.nanoTime();
-        q2(sparkContext, dataset);
-        // Get the time after executing the query
-        long endTime = System.nanoTime();
-        // Print the time it took to execute the query
-        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
-//
 //        // Get the time before executing the query
+//        long startTime = System.nanoTime();
+//        q2(sparkContext, dataset);
+//        // Get the time after executing the query
+//        long endTime = System.nanoTime();
+//        // Print the time it took to execute the query
+//        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
+//
+        // Get the time before executing the query
 //        long startTime2 = System.nanoTime();
 //        q3(sparkContext, rdd);
 //        // Get the time after executing the query
@@ -417,33 +420,33 @@ public class Main {
 //        // Print the time it took to execute the query
 //        System.out.println("Total time: " + (endTime2 - startTime2) / 1000000 + " ms");
 
-//        long startTime3 = System.nanoTime();
+        long startTime3 = System.nanoTime();
 //        rdd = rdd.repartition(ctx.defaultMinPartitions());
-////         Boolean lower = true;
-//        for (Boolean lower : new Boolean[] {true, false}) {
-//            System.out.println("Lower: " + lower);
-//
-//            int[] taus = {};
-//            double[] epsilon = {};
-//            double delta;
-//
-//            if (lower) {
-//                taus = new int[]{400};
-//                epsilon = new double[]{0.01, 0.001};
-//                delta = 0.1;
-//            } else {
-//                taus = new int[]{200000, 1000000};
-//                epsilon = new double[]{0.0001, 0.001, 0.002, 0.01};
-//                delta = 0.1;
-//            }
-//
-//            for (double eps : epsilon) {
-//                System.out.println("Epsilon: " + eps + " Delta: " + delta);
-//                q4(sparkContext, rdd, taus, eps, delta, lower);
-//            }
-//        }
-//        long endTime3 = System.nanoTime();
-//        System.out.println("Total time: " + (endTime3 - startTime3) / 1000000 + " ms");
+//         Boolean lower = true;
+        for (Boolean lower : new Boolean[] {true, false}) {
+            System.out.println("Lower: " + lower);
+
+            int[] taus = {};
+            double[] epsilon = {};
+            double delta;
+
+            if (lower) {
+                taus = new int[]{400};
+                epsilon = new double[]{0.01, 0.001};
+                delta = 0.1;
+            } else {
+                taus = new int[]{200000, 1000000};
+                epsilon = new double[]{0.0001, 0.001, 0.002, 0.01};
+                delta = 0.1;
+            }
+
+            for (double eps : epsilon) {
+                System.out.println("Epsilon: " + eps + " Delta: " + delta);
+                q4(sparkContext, rdd, taus, eps, delta, lower);
+            }
+        }
+        long endTime3 = System.nanoTime();
+        System.out.println("Total time: " + (endTime3 - startTime3) / 1000000 + " ms");
 
 //        q4(sparkContext, rdd, new int[] {200000, 1000000}, 0.001, 0.1, false);
 
