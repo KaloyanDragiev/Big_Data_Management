@@ -221,36 +221,28 @@ public class Main {
         filtered.unpersist();
     }
 
+    public static int hash(int index, int numHashTables, int[] primes) {
+        return Math.abs((primes[0] * index + primes[1]) % primes[2]) % numHashTables;
+    }
+    
     public static int[][] countMinSketch(int[] data, int numHashTables, int numHashFuncs) {
+        // Initialize a list of prime numbers to be used for hashing
+        int[][] primes = {{3553061, 3553049, 3552859}, {3553117, 3553139, 3553007}, {3554527, 3553453, 3555749}, {6790009, 2389213, 4390889}, {7888817, 8989837, 6791677}, {1889621, 2990017,8989837, }}; 
+        
+        
         // Initialize Count-Min sketch with given parameters
         int[][] sketch = new int[numHashFuncs][numHashTables];
 
         // Hash each element and increment corresponding counter
         for (int idx = 0; idx < data.length; idx++) {
             int element = data[idx];
-
-            int hashVal = first_hash(idx, numHashTables);
-            int hashVal_2 = second_hash(idx, numHashTables);
-            int hashVal_3 = third_hash(idx, numHashTables);
-
-            sketch[0][hashVal] += element;
-            sketch[1][hashVal_2] += element;
-            sketch[2][hashVal_3] += element;
+            for (int hash_func = 0; hash_func < numHashFuncs; hash_func++){
+               int hashVal = hash(idx, numHashTables, primes[hash_func]);
+               sketch[hash_func][hashVal] += element; 
+            }
         }
 
         return sketch;
-    }
-
-    public static int first_hash(int index, int numHashTables) {
-        return Math.abs((3553061 * index + 3553049) % 3552859) % numHashTables;
-    }
-
-    public static int second_hash(int index, int numHashTables) {
-        return Math.abs((3553117 * index + 3553139) % 3553007) % numHashTables;
-    }
-
-    public static int third_hash(int index, int numHashTables) {
-        return Math.abs((3554527 * index + 3553453) % 3555749) % numHashTables;
     }
 
     public static double estimateVariance(int[][] sketch, int vectorLength) {
