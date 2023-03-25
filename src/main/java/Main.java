@@ -46,7 +46,7 @@ public class Main {
     private static JavaRDD q1b(JavaSparkContext sparkContext, boolean onServer) {
         String vectorsFilePath = (onServer) ? "/vectors.csv" : "vectors.csv";
 
-        return sparkContext.textFile(vectorsFilePath, (int) Math.round(Math.pow(sparkContext.defaultParallelism() * 8, 1.0 / 3.0)));
+        return sparkContext.textFile(vectorsFilePath, 25);
     }
 
     private static void q2(JavaSparkContext sparkContext, Dataset dataset) {
@@ -120,12 +120,8 @@ public class Main {
 
     private static void q3(JavaSparkContext sparkContext, JavaRDD<String> rdd) {
         int[] taus = {20, 50, 310, 360, 410};
-//        int[] taus = {400};
-//        int[] taus = {200000, 1000000};
 
         System.out.println("Number of partitions: " + rdd.getNumPartitions());
-
-        long start_time = System.nanoTime();
 
         // Split every entry into an id and a vector
         JavaPairRDD<String, int[]> vectors = rdd.mapToPair(x -> {
@@ -135,8 +131,6 @@ public class Main {
         });
 
         vectors.persist(StorageLevel.MEMORY_ONLY());
-//        System.out.println("Vectors: " + vectors.count() + ", time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-        start_time = System.nanoTime();
 
         // Join the RDD with itself to get all possible pairs, and filter out the pairs where the first id is smaller than the second
         JavaPairRDD<Tuple2<String, int[]>, Tuple2<String, int[]>> pairs =
@@ -145,12 +139,6 @@ public class Main {
         // Join it again with itself to get all possible triplets
         JavaPairRDD<Tuple2<Tuple2<String, int[]>, Tuple2<String, int[]>>, Tuple2<String, int[]>> triplets =
                 pairs.cartesian(vectors).filter(x -> x._1._2._1.compareTo(x._2._1) < 0);
-
-//        triplets.persist(StorageLevel.MEMORY_ONLY());
-//        System.out.println("triplets: " + triplets.count() + ", time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-        System.out.println("triplets, time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-//        vectors.unpersist();
-        start_time = System.nanoTime();
 
         // Sum the vectors of each triplet, and create a new id for the triplet, which is the concatenation of the ids of the vectors
         JavaPairRDD<String, int[]> summed = triplets.mapToPair(x -> {
@@ -161,22 +149,6 @@ public class Main {
             return new Tuple2<>(x._1._1._1 + x._1._2._1 + x._2._1, sum);
         });
 
-//        summed.persist(StorageLevel.MEMORY_ONLY());
-//        System.out.println("summed: " + summed.count() + ", time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-        System.out.println("summed, time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-//        triplets.unpersist();
-        start_time = System.nanoTime();
-
-        // Compute the variance of each vector
-//        JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
-//            // Compute the average
-//            double avg = Arrays.stream(x).average().getAsDouble();
-//            // Compute E[X^2]
-//            double ex2 = Arrays.stream(x).mapToDouble(i -> Math.pow(i, 2)).sum() / ((double) x.length);
-//            // Compute (E[X])^2
-//            double exSquared = Math.pow(avg, 2);
-//            return ex2 - exSquared;
-//        });
         JavaPairRDD<String, Double> variance = summed.mapValues(x -> {
             // Compute the average
             double avg = 0; //Arrays.stream(x).average().getAsDouble();
@@ -191,20 +163,14 @@ public class Main {
             return var - Math.pow(avg, 2);
         });
 
-//        variance.persist(StorageLevel.MEMORY_ONLY());
-//        System.out.println("variance: " + variance.count() + ", time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-        System.out.println("variance, time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-//        summed.unpersist();
-        start_time = System.nanoTime();
+        long start_time = System.nanoTime();
 
         // Only keep the triplets where the variance is smaller than the biggest tau
         JavaPairRDD<String, Double> filtered = variance.filter(x -> x._2 <= Arrays.stream(taus).max().getAsInt());
 
         filtered.persist(StorageLevel.MEMORY_ONLY());
         System.out.println("filtered: " + filtered.count() + ", time: " + (System.nanoTime() - start_time) / 1000000 + "ms");
-//        variance.unpersist();
 
-        // Makes things faster
         vectors.unpersist();
 
         for (int tau : taus) {
@@ -213,8 +179,7 @@ public class Main {
             JavaPairRDD<String, Double> tauFiltered = filtered.filter(x -> x._2 <= tau);
             // Print the number of triplets
             System.out.println("Number of triplets: " + tauFiltered.count());
-            // Print the first 10 triplets
-//            tauFiltered.take(10).forEach(System.out::println);
+            // Print the all triplets
             tauFiltered.collect().stream().sorted(Comparator.comparing(Tuple2::_1)).forEach(x -> System.out.println(x._1() + ": " + x._2()));
         }
 
@@ -259,9 +224,7 @@ public class Main {
         double mean = (double) Arrays.stream(sketch[0]).sum() / (double) vectorLength;
 
         // Estimate variance
-        double variance = ((double) dotProduct / vectorLength) - Math.pow(mean, 2);
-        //System.out.println("Estimated variance: " + variance);
-        return variance;
+        return ((double) dotProduct / vectorLength) - Math.pow(mean, 2);
     }
 
     private static void q4(JavaSparkContext sparkContext, JavaRDD<String> rdd, int[] taus, double eps, double delta, Boolean lower) {
@@ -319,9 +282,6 @@ public class Main {
             return new Tuple2<>(key, sketch);
         });
 
-//        sketchTriples.persist(StorageLevel.MEMORY_ONLY());
-//        sketches.unpersist();
-
         JavaPairRDD<String, Double> sketchVariances = sketchTriples.mapValues(x -> estimateVariance(x, vectorLength));
 
         //Estimate variance of data stream using Count-Min sketch
@@ -350,23 +310,6 @@ public class Main {
 
             System.out.println("Tau " + t);
 
-            System.out.printf("Number of triplets: %d\n", filtered.count());
-
-//            List<Tuple2<String, Double>> first10Variances = filtered.take(10);
-            String[] ids = {"BIB4,NN5R,X1E8",
-                    "BZYC,OXK6,SWYK",
-                    "CDL3,M0JS,M46E",
-                    "DG4X,MG2V,Z84R",
-                    "DWG6,HIV1,PW9U",
-                    "E0CO,SR03,T7RP",
-                    "E0GX,JU8G,VHYZ",
-                    "H56N,OGO6,SZOI",
-                    "I69K,MTKC,YRBC",
-                    "MCGB,TN6V,UQ7Y"};
-
-            // Only take the variances, where the id is in the list of ids
-
-//            List<Tuple2<String, Double>> first10Variances = filtered.filter(x -> Arrays.asList(ids).contains(x._1)).take(10);;
             List<Tuple2<String, Double>> first10Variances = filtered.take(10);
 
             // Print the first 10 variances
@@ -374,7 +317,6 @@ public class Main {
             for (Tuple2<String, Double> f : first10Variances) {
                 System.out.printf("%s: %.2f\n", f._1(), f._2());
             }
-//            filtered.collect().stream().sorted(Comparator.comparing(Tuple2::_1)).forEach(x -> System.out.println(x._1() + ": " + x._2()));
 
         }
 
@@ -396,25 +338,38 @@ public class Main {
         System.out.println("Number of cores: " + ctx.defaultParallelism());
         System.out.println("Number of workers: " + ctx.getExecutorMemoryStatus().size());
 
-//        // Get the time before executing the query
-//        long startTime = System.nanoTime();
-//        q2(sparkContext, dataset);
-//        // Get the time after executing the query
-//        long endTime = System.nanoTime();
-//        // Print the time it took to execute the query
-//        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
-//
         // Get the time before executing the query
-//        long startTime2 = System.nanoTime();
-//        q3(sparkContext, rdd);
-//        // Get the time after executing the query
-//        long endTime2 = System.nanoTime();
-//        // Print the time it took to execute the query
-//        System.out.println("Total time: " + (endTime2 - startTime2) / 1000000 + " ms");
+        long startTime = System.nanoTime();
+        q2(sparkContext, dataset);
+        // Get the time after executing the query
+        long endTime = System.nanoTime();
+        // Print the time it took to execute the query
+        System.out.println("Time: " + (endTime - startTime) / 1000000 + " ms");
 
-        long startTime3 = System.nanoTime();
-//        rdd = rdd.repartition(ctx.defaultMinPartitions());
-//         Boolean lower = true;
+        // Get the time before executing the query
+        System.out.println("Big vectors, q3 code");
+        long startTime2 = System.nanoTime();
+        q3(sparkContext, rdd);
+        // Get the time after executing the query
+        long endTime2 = System.nanoTime();
+        // Print the time it took to execute the query
+        System.out.println("Total time: " + (endTime2 - startTime2) / 1000000 + " ms");
+
+        // Load the small vectors file, to cexecute the q3 code on the q2 dataset, and to run the q4 code
+        // Change the path to the vectors_small.csv file if necessary
+        String vectorsFilePath = (onServer) ? "/vectors_small.csv" : "vectors_small.csv";
+
+        rdd = sparkContext.textFile(vectorsFilePath, 5);
+
+        System.out.println("Small vectors, q3 code");
+        long startTime2_2 = System.nanoTime();
+        q3(sparkContext, rdd);
+        // Get the time after executing the query
+        long endTime2_2 = System.nanoTime();
+        // Print the time it took to execute the query
+        System.out.println("Total time: " + (endTime2_2 - startTime2_2) / 1000000 + " ms");
+
+        System.out.println("q4");
         for (Boolean lower : new Boolean[] {true, false}) {
             System.out.println("Lower: " + lower);
 
@@ -433,21 +388,13 @@ public class Main {
             }
 
             for (double eps : epsilon) {
+                long startTime3 = System.nanoTime();
                 System.out.println("Epsilon: " + eps + " Delta: " + delta);
                 q4(sparkContext, rdd, taus, eps, delta, lower);
+                long endTime3 = System.nanoTime();
+                System.out.println("Total time: " + (endTime3 - startTime3) / 1000000 + " ms");
             }
         }
-        long endTime3 = System.nanoTime();
-        System.out.println("Total time: " + (endTime3 - startTime3) / 1000000 + " ms");
-
-//        q4(sparkContext, rdd, new int[] {200000, 1000000}, 0.001, 0.1, false);
-
-//         Sleep for 1000 seconds to allow the Spark UI to load
-//        try {
-//            Thread.sleep(1000000);
-//        } catch (InterruptedException e) {
-//            e.printStackTrace();
-//        }
 
         sparkContext.close();
     }
